@@ -1,6 +1,6 @@
 # Trading Signals Dashboard
 
-A fully static, professional trading analytics dashboard that visualizes trading signals stored as CSV files in this repository. No backend required: the site reads the CSVs live via the GitLab API directly in the browser.
+A fully static, professional trading analytics dashboard that visualizes trading signals stored as CSV files in this repository. No backend required: the site reads the CSVs live via the GitHub API directly in the browser.
 
 ## How it works
 
@@ -31,15 +31,16 @@ The signal date is taken from the filename (`YYYY-MM-DD.csv`).
 - `index.html` - KPI dashboard, active signal summary, open-trade age chart, latest trading days (incremental loading), performance charts, analytics, leaderboards, repository activity, transparency section.
 - `active-signals.html` - Live watchlist of all open trades with search, sorting, filtering, pagination, and CSV export.
 - `signals.html` - Browser for every CSV file with per-file statistics and expandable signal tables.
+- `sl-hits.html` - Stop loss hits with reentry points analysis.
 - Clicking any trade opens a detail modal with daily performance table and an interactive Max Profit / Max Loss progression chart.
 
-## Deployment (GitLab Pages)
+## Deployment (GitHub Pages)
 
-1. Merge to the default branch. The included `.gitlab-ci.yml` copies the static files into `public/` and publishes them.
-2. After the first successful pipeline, the site is available at:
-   `https://devops26071-group.gitlab.io/csv-website/`
-   (see **Deploy > Pages** in the project for the exact URL).
-3. The project must be **public** (or Pages access configured) so the GitLab API can be read anonymously by visitors' browsers.
+1. Push to the `main` branch. The included `.github/workflows/daily-process.yml` processes signals daily and deploys to `gh-pages` branch.
+2. Enable GitHub Pages: Settings → Pages → Source: **Deploy from branch** → `gh-pages` / root
+3. After the first successful workflow run, the site is available at:
+   `https://faizjio7011-code.github.io/trade_signals/`
+4. The repository must be **public** so the GitHub API can be read anonymously by visitors' browsers.
 
 ## Configuration
 
@@ -47,21 +48,24 @@ All data-source settings live at the top of `app.js` in the `CONFIG` object:
 
 ```js
 const CONFIG = {
-  source: 'gitlab',              // 'gitlab' or 'github'
-  gitlab: { baseUrl: 'https://gitlab.com', projectPath: 'devops26071-group/csv-website', ref: 'main' },
-  github: { owner: 'YOUR_USER', repo: 'YOUR_REPO', branch: 'main' },
+  source: 'github',
+  csvFolder: 'signals/',
+  slHitsFolder: 'sl_hits/',
+  github: { owner: 'faizjio7011-code', repo: 'trade_signals', branch: 'main' },
+  concurrency: 8,
+  cachePrefix: 'sigcache:v1:',
 };
 ```
 
-## Migrating to GitHub Pages later
+## Daily Processing
 
-The data layer is abstracted behind a `DataSource` adapter in `app.js`. To migrate:
-
-1. Push the same files to a GitHub repository and enable GitHub Pages.
-2. In `app.js`, set `CONFIG.source = 'github'` and fill in `CONFIG.github` (owner, repo, branch).
-3. Delete `.gitlab-ci.yml` (GitHub Pages serves files directly).
-
-Everything else works unchanged.
+The GitHub Action (`.github/workflows/daily-process.yml`) runs daily:
+1. Reads `orderbook/*.csv` files
+2. Fetches price data via yfinance
+3. Calculates daily Max Profit/Loss, TP/SL hits
+4. Generates `signals/*.csv` with daily performance columns
+5. Creates `sl_hits/*.csv` with reentry points (next same-direction candle after SL hit)
+6. Commits updates and deploys to GitHub Pages
 
 ## Performance
 

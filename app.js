@@ -8,68 +8,12 @@ const CONFIG = {
   source: 'github',
   csvFolder: 'signals/',
   slHitsFolder: 'sl_hits/',
-  gitlab: { baseUrl: 'https://gitlab.com', projectPath: 'devops26071-group/csv-website', ref: 'main' },
   github: { owner: 'faizjio7011-code', repo: 'trade_signals', branch: 'main' },
   concurrency: 8,
   cachePrefix: 'sigcache:v1:',
 };
 
 /* ================= Data source adapters ================= */
-const GitLabSource = {
-  enc: encodeURIComponent(CONFIG.gitlab.projectPath),
-  api(path, params = {}) {
-    const u = new URL(`${CONFIG.gitlab.baseUrl}/api/v4/projects/${this.enc}${path}`);
-    Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, v));
-    return u.toString();
-  },
-  async listCsvFiles() {
-    const files = [];
-    let page = 1;
-    while (true) {
-      const res = await fetch(this.api('/repository/tree', { recursive: 'true', per_page: '100', page: String(page), ref: CONFIG.gitlab.ref }));
-      if (!res.ok) throw new Error(`GitLab API error ${res.status} while listing files`);
-      const items = await res.json();
-      for (const it of items) {
-        if ( it.type === 'blob' &&  it.path.startsWith(CONFIG.csvFolder) && /\.csv$/i.test(it.name)) files.push({ path: it.path, name: it.name, id: it.id });
-      }
-      const next = res.headers.get('x-next-page');
-      if (!next) break;
-      page = parseInt(next, 10);
-    }
-    return files;
-  },
-  async listSlHitFiles() {
-    const files = [];
-    let page = 1;
-    while (true) {
-      const res = await fetch(this.api('/repository/tree', { recursive: 'true', per_page: '100', page: String(page), ref: CONFIG.gitlab.ref }));
-      if (!res.ok) throw new Error(`GitLab API error ${res.status} while listing files`);
-      const items = await res.json();
-      for (const it of items) {
-        if ( it.type === 'blob' &&  it.path.startsWith(CONFIG.slHitsFolder) && /\.csv$/i.test(it.name)) files.push({ path: it.path, name: it.name, id: it.id });
-      }
-      const next = res.headers.get('x-next-page');
-      if (!next) break;
-      page = parseInt(next, 10);
-    }
-    return files;
-  },
-  async fetchRaw(path) {
-    const res = await fetch(this.api(`/repository/files/${encodeURIComponent(path)}/raw`, { ref: CONFIG.gitlab.ref }));
-    if (!res.ok) throw new Error(`Failed to fetch ${path} (${res.status})`);
-    return res.text();
-  },
-  async recentCommits(n = 10) {
-    try {
-      const res = await fetch(this.api('/repository/commits', { per_page: String(n), ref_name: CONFIG.gitlab.ref }));
-      if (!res.ok) return [];
-      return (await res.json()).map(c => ({ title: c.title, date: c.committed_date, url: c.web_url }));
-    } catch { return []; }
-  },
-  repoUrl: () => `${CONFIG.gitlab.baseUrl}/${CONFIG.gitlab.projectPath}`,
-  fileUrl: (path) => `${CONFIG.gitlab.baseUrl}/${CONFIG.gitlab.projectPath}/-/blob/${CONFIG.gitlab.ref}/${path}`,
-};
-
 const GitHubSource = {
   base() { const g = CONFIG.github; return `https://api.github.com/repos/${g.owner}/${g.repo}`; },
   async listCsvFiles() {
@@ -103,7 +47,7 @@ const GitHubSource = {
   fileUrl(path) { const g = CONFIG.github; return `https://github.com/${g.owner}/${g.repo}/blob/${g.branch}/${path}`; },
 };
 
-const DataSource = CONFIG.source === 'github' ? GitHubSource : GitLabSource;
+const DataSource = GitHubSource;
 
 /* ================= Cache (localStorage keyed by blob SHA) ================= */
 const Cache = {
