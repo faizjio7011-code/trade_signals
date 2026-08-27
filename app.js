@@ -5,8 +5,9 @@
 
 /* ================= Configuration ================= */
 const CONFIG = {
-  source: 'github', // 'gitlab' | 'github'
+  source: 'github',
   csvFolder: 'signals/',
+  slHitsFolder: 'sl_hits/',
   gitlab: { baseUrl: 'https://gitlab.com', projectPath: 'devops26071-group/csv-website', ref: 'main' },
   github: { owner: 'faizjio7011-code', repo: 'trade_signals', branch: 'main' },
   concurrency: 8,
@@ -37,6 +38,22 @@ const GitLabSource = {
     }
     return files;
   },
+  async listSlHitFiles() {
+    const files = [];
+    let page = 1;
+    while (true) {
+      const res = await fetch(this.api('/repository/tree', { recursive: 'true', per_page: '100', page: String(page), ref: CONFIG.gitlab.ref }));
+      if (!res.ok) throw new Error(`GitLab API error ${res.status} while listing files`);
+      const items = await res.json();
+      for (const it of items) {
+        if ( it.type === 'blob' &&  it.path.startsWith(CONFIG.slHitsFolder) && /\.csv$/i.test(it.name)) files.push({ path: it.path, name: it.name, id: it.id });
+      }
+      const next = res.headers.get('x-next-page');
+      if (!next) break;
+      page = parseInt(next, 10);
+    }
+    return files;
+  },
   async fetchRaw(path) {
     const res = await fetch(this.api(`/repository/files/${encodeURIComponent(path)}/raw`, { ref: CONFIG.gitlab.ref }));
     if (!res.ok) throw new Error(`Failed to fetch ${path} (${res.status})`);
@@ -60,6 +77,13 @@ const GitHubSource = {
     if (!res.ok) throw new Error(`GitHub API error ${res.status} while listing files`);
     const data = await res.json();
     return (data.tree || []).filter(it =>it.type === 'blob' &&it.path.startsWith(CONFIG.csvFolder) && /\.csv$/i.test(it.path))
+      .map(it => ({path: it.path,name: it.path.split('/').pop(),id: it.sha  }));
+  },
+  async listSlHitFiles() {
+    const res = await fetch(`${this.base()}/git/trees/${CONFIG.github.branch}?recursive=1`);
+    if (!res.ok) throw new Error(`GitHub API error ${res.status} while listing files`);
+    const data = await res.json();
+    return (data.tree || []).filter(it =>it.type === 'blob' &&it.path.startsWith(CONFIG.slHitsFolder) && /\.csv$/i.test(it.path))
       .map(it => ({path: it.path,name: it.path.split('/').pop(),id: it.sha  }));
   },
   async fetchRaw(path) {
@@ -148,6 +172,22 @@ const HEADER_ALIASES = {
   exitDate: ['exit date', 'exitdate', 'exit_date'],
 };
 
+const SL_HITS_ALIASES = {
+  symbol: ['symbol', 'ticker', 'stock'],
+  originalSignalDate: ['originalsignldate', 'original_signal_date', 'signal date'],
+  direction: ['direction', 'buy/sell', 'buysell'],
+  entry: ['entry', 'entry price'],
+  stoploss: ['stoploss', 'stop loss', 'sl'],
+  targetPrice: ['targetprice', 'target price', 'tp'],
+  slHitDate: ['slhitdate', 'sl_hit_date', 'sl hit date'],
+  slHitPrice: ['slhitprice', 'sl_hit_price', 'sl hit price'],
+  maxDrawdown: ['maxdrawdown%', 'max drawdown%', 'maxdrawdown', 'max drawdown'],
+  maxProfit: ['maxprofit%', 'max profit%', 'maxprofit', 'max profit'],
+  reentryDate: ['reentrydate', 'reentry_date', 'reentry date'],
+  reentryPrice: ['reentryprice', 'reentry_price', 'reentry price'],
+  reentryType: ['reentrytype', 'reentry_type', 'reentry type'],
+};
+
 function normStatus(s) {
   const t = String(s || '').toLowerCase();
   if (t.includes('open') || t.includes('active') || t === '') return 'open';
@@ -167,7 +207,6 @@ function buildTrades(file, text) {
   for (const [key, aliases] of Object.entries(HEADER_ALIASES)) {
     col[key] = lower.findIndex(h => aliases.includes(h));
   }
-  // Dynamic daily columns: YYYY-MM-DD_MaxProfit / YYYY-MM-DD_MaxLoss
   const dailyCols = [];
   headers.forEach((h, i) => {
     const m = h.match(DAILY_RE);
@@ -205,13 +244,51 @@ function buildTrades(file, text) {
       exitPrice, exitDateRaw: get('exitDate'), exitDate,
       signalDate, signalDateStr: signalDate ? signalDate.toISOString().slice(0, 10) : '\u2013',
       daily, returnPct, holdingDays, daysOpen,
+      maxDrawdown: num(get('maxdrawdown%')) || (daily.length ? Math.min(...daily.map(d => d.maxLoss).filter(v => v != null)) : null),
+      maxProfit: num(get('maxprofit%')) || (daily.length ? Math.max(...daily.map(d => d.maxProfit).filter(v => v != null)) : null),
     });
   }
   return trades;
 }
 
+function buildSlHits(file, text) {
+  const rows = parseCSV(text);
+  if (rows.length < 2) return [];
+  const headers = rows[0].map(h => h.trim());
+  const lower = headers.map(h => h.toLowerCase().replace(/[%\s]/g, ''));
+  const col = {};
+  for (const [key, aliases] of Object.entries(SL_HITS_ALIASES)) {
+    const normAliases = aliases.map(a => a.toLowerCase().replace(/[%\s]/g, ''));
+    col[key] = lower.findIndex(h => normAliases.includes(h));
+  }
+  const hits = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    const get = (k) => col[k] >= 0 ? (row[col[k]] || '').trim() : '';
+    const symbol = get('symbol');
+    if (!symbol) continue;
+    hits.push({
+      id: `${file.path}#${r}`, file: file.path, fileName: file.name,
+      symbol,
+      originalSignalDate: get('originalSignalDate'),
+      direction: get('direction'),
+      entry: num(get('entry')),
+      stoploss: num(get('stoploss')),
+      targetPrice: num(get('targetPrice')),
+      slHitDate: get('slHitDate'),
+      slHitPrice: num(get('slHitPrice')),
+      maxDrawdown: num(get('maxDrawdown')),
+      maxProfit: num(get('maxProfit')),
+      reentryDate: get('reentryDate'),
+      reentryPrice: num(get('reentryPrice')),
+      reentryType: get('reentryType'),
+    });
+  }
+  return hits;
+}
+
 /* ================= Global state ================= */
-const State = { files: [], trades: [], tradeIndex: new Map(), loaded: false };
+const State = { files: [], trades: [], tradeIndex: new Map(), slHitFiles: [], slHits: [], loaded: false };
 const chartRegistry = [];
 
 function fileStats(trades) {
@@ -228,18 +305,41 @@ async function loadAll() {
   const progress = $('#load-progress');
   const list = await DataSource.listCsvFiles();
   list.sort((a, b) => (parseDate(b.name)?.getTime() || 0) - (parseDate(a.name)?.getTime() || 0));
+  
+  // Load SL hits files
+  let slHitList = [];
+  try {
+    slHitList = await DataSource.listSlHitFiles();
+    slHitList.sort((a, b) => (parseDate(b.name)?.getTime() || 0) - (parseDate(a.name)?.getTime() || 0));
+  } catch (e) {
+    console.warn('Could not load SL hits files:', e);
+  }
+  
   let done = 0;
+  const totalFiles = list.length + slHitList.length;
   const results = await mapLimit(list, CONFIG.concurrency, async (f) => {
     let text = Cache.get(f.path, f.id);
     if (text == null) { text = await DataSource.fetchRaw(f.path); Cache.set(f.path, f.id, text); }
     done++;
-    if (progress) progress.textContent = `Loading signal data\u2026 ${done}/${list.length} files`;
+    if (progress) progress.textContent = `Loading signal data\u2026 ${done}/${totalFiles} files`;
     const trades = buildTrades(f, text);
     return { ...f, date: parseDate(f.name), trades, stats: fileStats(trades) };
   });
+  
+  const slHitResults = await mapLimit(slHitList, CONFIG.concurrency, async (f) => {
+    let text = Cache.get(f.path, f.id);
+    if (text == null) { text = await DataSource.fetchRaw(f.path); Cache.set(f.path, f.id, text); }
+    done++;
+    if (progress) progress.textContent = `Loading signal data\u2026 ${done}/${totalFiles} files`;
+    const hits = buildSlHits(f, text);
+    return { ...f, date: parseDate(f.name), hits };
+  });
+  
   State.files = results;
   State.trades = results.flatMap(f => f.trades);
   State.trades.forEach(t => State.tradeIndex.set(t.id, t));
+  State.slHitFiles = slHitResults;
+  State.slHits = slHitResults.flatMap(f => f.hits);
   State.loaded = true;
   if (progress) progress.classList.add('hidden');
 }
@@ -703,6 +803,121 @@ function renderSignals() {
   render();
 }
 
+/* ================= Page: SL Hits ================= */
+function renderSlHits() {
+  const all = [...State.slHits].sort((a, b) => {
+    const da = a.slHitDate ? new Date(a.slHitDate).getTime() : 0;
+    const db = b.slHitDate ? new Date(b.slHitDate).getTime() : 0;
+    return db - da;
+  });
+  $('#slhits-count-badge').textContent = `${all.length} SL hits`;
+  const cols = ['symbol', 'originalSignalDate', 'direction', 'entry', 'stoploss', 'targetPrice', 'slHitDate', 'slHitPrice', 'maxDrawdown', 'maxProfit', 'reentryDate', 'reentryPrice', 'reentryType'];
+  const colHeaders = {
+    symbol: 'Symbol',
+    originalSignalDate: 'Signal Date',
+    direction: 'Dir',
+    entry: 'Entry',
+    stoploss: 'SL',
+    targetPrice: 'TP',
+    slHitDate: 'SL Hit Date',
+    slHitPrice: 'SL Hit Price',
+    maxDrawdown: 'Max DD%',
+    maxProfit: 'Max Profit%',
+    reentryDate: 'Reentry Date',
+    reentryPrice: 'Reentry Price',
+    reentryType: 'Reentry Type'
+  };
+  
+  let state = { q: '', page: 1, pageSize: 25, sort: 'slHitDate', dir: -1 };
+  const tableEl = $('#slhits-table'), pagEl = $('#slhits-pagination');
+  
+  const filtered = () => {
+    let rows = all;
+    if (state.q) {
+      const q = state.q.toLowerCase();
+      rows = rows.filter(h => h.symbol.toLowerCase().includes(q) || 
+        (h.originalSignalDate && h.originalSignalDate.includes(q)) ||
+        (h.slHitDate && h.slHitDate.includes(q)) ||
+        (h.direction && h.direction.toLowerCase().includes(q)) ||
+        (h.reentryType && h.reentryType.toLowerCase().includes(q)));
+    }
+    if (state.sort) {
+      const key = state.sort;
+      rows = [...rows].sort((a, b) => {
+        let x = a[key], y = b[key];
+        if (key === 'slHitDate' || key === 'originalSignalDate' || key === 'reentryDate') {
+          x = x ? new Date(x).getTime() : 0;
+          y = y ? new Date(y).getTime() : 0;
+        } else if (typeof x === 'string') {
+          x = x.toLowerCase();
+          y = y.toLowerCase();
+        }
+        return (x < y ? -1 : x > y ? 1 : 0) * state.dir;
+      });
+    }
+    return rows;
+  };
+  
+  const render = () => {
+    const rows = filtered();
+    const totalPages = Math.max(1, Math.ceil(rows.length / state.pageSize));
+    state.page = Math.min(state.page, totalPages);
+    const slice = rows.slice((state.page - 1) * state.pageSize, state.page * state.pageSize);
+    
+    if (!slice.length) {
+      tableEl.innerHTML = `<div class="empty-state"><span class="empty-icon">\u{1F4ED}</span>No SL hits found</div>`;
+      renderPagination(pagEl, 1, 1, () => {});
+      return;
+    }
+    
+    const head = cols.map(c => `<th class="sortable" data-sort="${c}">${colHeaders[c]}</th>`).join('');
+    const body = slice.map(h => {
+      const cells = cols.map(c => {
+        let val = h[c];
+        if (c === 'maxDrawdown' || c === 'maxProfit') {
+          return `<td class="${pctClass(val)}">${fmtPct(val)}</td>`;
+        }
+        if (c === 'entry' || c === 'stoploss' || c === 'targetPrice' || c === 'slHitPrice' || c === 'reentryPrice') {
+          return `<td>${fmtNum(val)}</td>`;
+        }
+        return `<td>${esc(val ?? '\u2013')}</td>`;
+      }).join('');
+      return `<tr>${cells}</tr>`;
+    }).join('');
+    
+    tableEl.innerHTML = `<table class="data"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    renderPagination(pagEl, state.page, totalPages, p => { state.page = p; render(); });
+  };
+  
+  $('#slhits-search').addEventListener('input', e => { state.q = e.target.value.trim(); state.page = 1; render(); });
+  $('#slhits-page-size').addEventListener('change', e => { state.pageSize = parseInt(e.target.value, 10); state.page = 1; render(); });
+  
+  tableEl.addEventListener('click', e => {
+    const th = e.target.closest('th.sortable');
+    if (!th) return;
+    const key = th.dataset.sort;
+    if (state.sort === key) state.dir *= -1; else { state.sort = key; state.dir = 1; }
+    render();
+  });
+  
+  $('#slhits-export').addEventListener('click', () => {
+    const rows = filtered();
+    const header = ['Symbol', 'Signal Date', 'Direction', 'Entry', 'SL', 'TP', 'SL Hit Date', 'SL Hit Price', 'Max DD%', 'Max Profit%', 'Reentry Date', 'Reentry Price', 'Reentry Type'];
+    const csv = [header.join(',')].concat(rows.map(h => 
+      [h.symbol, h.originalSignalDate, h.direction, h.entry ?? '', h.stoploss ?? '', h.targetPrice ?? '',
+       h.slHitDate, h.slHitPrice ?? '', h.maxDrawdown ?? '', h.maxProfit ?? '', h.reentryDate, h.reentryPrice ?? '', h.reentryType]
+        .map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')
+    )).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `sl-hits-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  
+  render();
+}
+
 /* ================= Boot ================= */
 async function boot() {
   initTheme();
@@ -723,6 +938,7 @@ async function boot() {
     if (page === 'index') renderIndex();
     else if (page === 'active') renderActive();
     else if (page === 'signals') renderSignals();
+    else if (page === 'slhits') renderSlHits();
   } catch (e) {
     console.error(e);
     const err = $('#app-error');
