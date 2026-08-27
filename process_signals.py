@@ -26,15 +26,20 @@ def get_candle_data(symbol, start_date, end_date=None):
     if end_date is None:
         end_date = datetime.now().strftime('%Y-%m-%d')
     
+    print(f"  Fetching data for {symbol} from {start_date} to {end_date}")
     try:
         ticker = yf.Ticker(f"{symbol}.NS")
         df = ticker.history(start=start_date, end=end_date, interval='1d')
         if df.empty:
+            print(f"    .NS empty, trying without suffix")
             ticker = yf.Ticker(symbol)
             df = ticker.history(start=start_date, end=end_date, interval='1d')
+        print(f"    Got {len(df)} rows")
         return df
     except Exception as e:
         print(f"Error fetching data for {symbol}: {e}")
+        import traceback
+        traceback.print_exc()
         return pd.DataFrame()
 
 def calculate_daily_performance(df, entry, sl, tp, direction):
@@ -263,17 +268,36 @@ def consolidate_sl_hits():
 
 def main():
     print("Starting signal processing...")
+    print(f"Current dir: {os.getcwd()}")
+    print(f"Orderbook dir exists: {ORDERBOOK_DIR.exists()}")
     
     orderbook_files = sorted(ORDERBOOK_DIR.glob('orderbook*.csv'))
+    print(f"Found {len(orderbook_files)} orderbook files:")
+    for f in orderbook_files:
+        print(f"  - {f}")
     
     for f in orderbook_files:
         try:
             process_orderbook_file(f)
         except Exception as e:
             print(f"Error processing {f}: {e}")
+            import traceback
+            traceback.print_exc()
     
     consolidate_sl_hits()
     print("Processing complete!")
+    print(f"Signals dir exists: {SIGNALS_DIR.exists()}")
+    print(f"SL_HIT_DIR exists: {SL_HIT_DIR.exists()}")
+    if SIGNALS_DIR.exists():
+        signals = list(SIGNALS_DIR.glob('*.csv'))
+        print(f"Generated {len(signals)} signal files:")
+        for s in signals:
+            print(f"  - {s}")
+    if SL_HIT_DIR.exists():
+        sl_hits = list(SL_HIT_DIR.glob('*.csv'))
+        print(f"Generated {len(sl_hits)} SL hit files:")
+        for s in sl_hits:
+            print(f"  - {s}")
 
 if __name__ == '__main__':
     main()
